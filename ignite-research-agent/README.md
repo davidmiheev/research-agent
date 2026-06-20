@@ -91,6 +91,7 @@ publish:
 ```bash
 dodil ignite app deploy your-org:research-agent \
   --git-url https://github.com/davidmiheev/ignite-research-agent.git --git-ref main \
+  --git-sub-path ignite-research-agent
   --dockerfile-path Dockerfile \
   --tier medium --description "Personal research agent with K3 memory + arXiv" \
   --env DODIL_SA_ID=<svcacc-id> --env DODIL_SA_SECRET=<svcacc-secret> \
