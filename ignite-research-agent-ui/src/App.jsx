@@ -13,14 +13,24 @@ export default function App() {
   );
 }
 
-const SESSION_ID = "ui-" + Math.random().toString(36).slice(2);
+function newSessionId() {
+  return "ui-" + Math.random().toString(36).slice(2);
+}
 
 function Chat() {
   const { invoke } = useIgnite();
   const [messages, setMessages] = useState([]); // {role, text} or {tool, result}
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sessionId, setSessionId] = useState(newSessionId);
   const logRef = useRef(null);
+
+  function clearChat() {
+    // New session id so the agent starts a fresh conversation on the backend too.
+    setMessages([]);
+    setInput("");
+    setSessionId(newSessionId());
+  }
 
   useEffect(() => {
     logRef.current?.scrollTo(0, logRef.current.scrollHeight);
@@ -32,7 +42,7 @@ function Chat() {
     setInput("");
     setMessages((m) => [...m, { role: "user", text }]);
     setBusy(true);
-    const r = await invoke({ message: text, session_id: SESSION_ID });
+    const r = await invoke({ message: text, session_id: sessionId });
     setBusy(false);
 
     if (r.error) return push({ role: "bot", text: `⚠ ${r.error}` });
@@ -57,6 +67,16 @@ function Chat() {
   return (
     <div className="panel">
       <div className="card">
+        <div className="card-head">
+          <h2>Chat</h2>
+          <button
+            className="ghost"
+            onClick={clearChat}
+            disabled={busy || messages.length === 0}
+          >
+            Clear chat
+          </button>
+        </div>
         <div className="chatlog" ref={logRef}>
           {messages.length === 0 && (
             <div className="muted" style={{ padding: "8px 2px" }}>
