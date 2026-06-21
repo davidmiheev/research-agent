@@ -1,5 +1,31 @@
 import React, { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import AuthGate, { useIgnite } from "./AuthGate.jsx";
+
+// Normalize the LaTeX delimiters a model may emit (\(…\), \[…\]) to the
+// $…$ / $$…$$ that remark-math understands.
+function normalizeMath(s) {
+  return (s || "")
+    .replace(/\\\((.+?)\\\)/gs, (_, m) => `$${m}$`)
+    .replace(/\\\[(.+?)\\\]/gs, (_, m) => `$$${m}$$`);
+}
+
+function Markdown({ text }) {
+  return (
+    <div className="md">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
+        components={{ a: (props) => <a target="_blank" rel="noreferrer" {...props} /> }}
+      >
+        {normalizeMath(text)}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 export default function App() {
   return (
@@ -91,7 +117,7 @@ function Chat() {
               </div>
             ) : (
               <div className={`bubble ${m.role}`} key={i}>
-                {m.text}
+                {m.role === "bot" ? <Markdown text={m.text} /> : m.text}
               </div>
             )
           )}

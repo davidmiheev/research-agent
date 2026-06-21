@@ -20,6 +20,7 @@ instead of waiting for the source's periodic sync.
 
 from __future__ import annotations
 
+import concurrent.futures as cf
 import os
 import re
 import time
@@ -198,29 +199,73 @@ def save_chat(messages: list[dict], title: str | None = None) -> str:
     return save_memory(title or f"Conversation {stamp}", "\n\n".join(lines), tags=["chat"])
 
 
+_STOP = {
+    "the", "a", "an", "of", "to", "in", "on", "and", "or", "for", "is", "are",
+    "was", "were", "what", "do", "does", "did", "i", "my", "me", "about", "that",
+    "this", "with", "how", "when", "where", "which", "you", "your", "please",
+    "can", "could", "would", "tell", "give", "show",
+}
+
+
+def _variant_query(q: str) -> str:
+    """A lighter, keyword-only rephrasing — relevant but different enough to
+    widen recall — used as a hedge when the first search is slow."""
+    words = [w for w in re.findall(r"[A-Za-z0-9]+", q.lower()) if len(w) > 2 and w not in _STOP]
+    return " ".join(words[:8])
+
+
+def _search_raw(query: str, top_k: int) -> list[dict]:
+    with httpx.Client(base_url=BASE, timeout=15) as c:
+        r = c.post(
+            f"/{BUCKET}/vector/search",
+            headers=_headers(),
+            json={"bucket": BUCKET, "text": query, "top_k": top_k, "include_content": True},
+        )
+    if r.status_code >= 300:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:160]}")
+    return r.json().get("results") or []
+
+
 def search_memories(query: str, top_k: int = 5) -> str:
     try:
         ensure_ingest()
-        with httpx.Client(base_url=BASE, timeout=30) as c:
-            r = c.post(
-                f"/{BUCKET}/vector/search",
-                headers=_headers(),
-                json={"bucket": BUCKET, "text": query, "top_k": top_k, "include_content": True},
-            )
     except auth.NotConfigured as e:
         return f"Could not search memories: {e}"
-    except Exception as e:
-        return f"Could not search memories: {e}"
+    except Exception:
+        pass  # provisioning is best-effort; search may still succeed
 
-    if r.status_code >= 300:
-        return f"Memory search unavailable (HTTP {r.status_code}): {r.text[:160]}"
+    results: list[dict] | None = None
+    error: str | None = None
+    ex = cf.ThreadPoolExecutor(max_workers=2)
+    try:
+        primary = ex.submit(_search_raw, query, top_k)
+        done, _ = cf.wait([primary], timeout=2.0)
+        futs = [primary]
+        if not done:
+            # Primary is slow (>2s): race a second async search with a variant,
+            # still-relevant query and use whichever returns first.
+            vq = _variant_query(query)
+            if vq and vq != query.strip().lower():
+                futs.append(ex.submit(_search_raw, vq, top_k))
+        try:
+            for fut in cf.as_completed(futs, timeout=16):
+                try:
+                    results = fut.result()
+                    break  # first response wins — don't wait for the other
+                except Exception as e:
+                    error = str(e)  # this one failed; keep waiting for the other
+        except cf.TimeoutError:
+            pass
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
 
-    results = r.json().get("results") or []
+    if results is None:
+        return f"Memory search unavailable: {error[:160]}" if error else "Memory search timed out."
     if not results:
         return "No matching memories yet (a just-saved memory takes ~30s to index)."
 
     lines = []
-    for i, m in enumerate(results, 1):
+    for i, m in enumerate(results[:top_k], 1):
         text = (m.get("content") or m.get("text") or m.get("key") or "").strip()
         score = m.get("score")
         suffix = f"  (score {round(float(score), 3)})" if score is not None else ""
