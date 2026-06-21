@@ -56,7 +56,7 @@ def chat(messages: list[dict]) -> str:
     payload = {
         "model": os.getenv("MODEL_NAME", DEFAULT_MODEL),
         "messages": messages,
-        "max_tokens": int(os.getenv("MODEL_MAX_TOKENS", "1500")),
+        "max_tokens": int(os.getenv("MODEL_MAX_TOKENS", "15000")),
     }
     # Some models (e.g. kimi) only accept their fixed default temperature, so we
     # omit it unless explicitly configured.
