@@ -8,8 +8,7 @@ chat UI so the agent can also be demoed live by opening its public URL.
 
 from __future__ import annotations
 
-import os
-from collections import defaultdict, deque
+from collections import defaultdict
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -18,8 +17,11 @@ from . import agent, k3, llm
 
 app = FastAPI(title="Ignite Research Agent", docs_url="/docs")
 
-# Per-session rolling history (in-process; fine for a single-replica demo).
-_HISTORY: dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
+# Full per-session conversation, kept in-process (fine for a single-replica
+# demo). The whole thing is what `save_chat` persists; only the most recent
+# CONTEXT_WINDOW messages are fed to the model each turn for continuity.
+_SESSIONS: dict[str, list[dict]] = defaultdict(list)
+CONTEXT_WINDOW = 40
 
 
 @app.get("/healthz")
@@ -28,10 +30,10 @@ def healthz():
 
 
 def _chat(message: str, session_id: str) -> dict:
-    history = list(_HISTORY[session_id])
-    result = agent.run_agent(message, history)
-    _HISTORY[session_id].append({"role": "user", "content": message})
-    _HISTORY[session_id].append({"role": "assistant", "content": result["reply"]})
+    convo = _SESSIONS[session_id]
+    result = agent.run_agent(message, convo[-CONTEXT_WINDOW:], full_history=convo)
+    convo.append({"role": "user", "content": message})
+    convo.append({"role": "assistant", "content": result["reply"]})
     return result
 
 
@@ -66,29 +68,24 @@ async def memories_search(request: Request):
     return {"results": k3.search_memories(body.get("query", ""), int(body.get("top_k", 5)))}
 
 
+@app.post("/chat/save")
+async def chat_save(request: Request):
+    """Persist a session's conversation to memory (used by the UI's save button)."""
+    body = await request.json()
+    session_id = (body or {}).get("session_id", "default")
+    return {"result": k3.save_chat(_SESSIONS.get(session_id, []), (body or {}).get("title"))}
+
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return HTMLResponse(_INDEX_HTML)
 
 
-@app.on_event("startup")
-def _startup():
-    # Provision the K3 bucket + vector engine up front so the first save is
-    # snappy. Best-effort: engine provisioning is async and must never block boot.
-    import threading
-
-    def _warm():
-        try:
-            k3.ensure_ingest()
-        except Exception:
-            pass
-
-    if auth_configured():
-        threading.Thread(target=_warm, daemon=True).start()
-
-
-def auth_configured() -> bool:
-    return bool(os.getenv("DODIL_SA_ID") and os.getenv("DODIL_SA_SECRET"))
+# No startup warm-up on purpose: K3 provisioning (`k3.ensure_ingest`) runs lazily
+# on the first save/search instead. Doing that network burst at boot starves the
+# single-CPU pod's event loop during the platform's tight liveness probe
+# (initial_delay 2s, timeout 1s) and can crashloop the container before it ever
+# goes Ready. The pod must answer GET /healthz the instant uvicorn binds.
 
 
 _INDEX_HTML = """<!doctype html>

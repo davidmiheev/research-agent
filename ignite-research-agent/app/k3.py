@@ -160,6 +160,44 @@ def save_memory(title: str, content: str, tags: list[str] | None = None) -> str:
     return f"Saved memory '{title}' to k3://{BUCKET}/{key} — K3 is embedding it for semantic recall."
 
 
+def put_object(key: str, data: bytes, content_type: str = "application/octet-stream") -> str:
+    """Upload a raw object (e.g. a PDF) and let K3's pipeline process it."""
+    try:
+        ensure_bucket()
+        ensure_ingest()
+    except auth.NotConfigured as e:
+        return f"Could not upload: {e}"
+    except Exception:
+        pass  # provisioning is best-effort; the write below is what matters
+
+    try:
+        with httpx.Client(base_url=BASE, timeout=120) as c:
+            r = c.put(f"/{BUCKET}/{key}", headers=_headers(content_type), content=data)
+    except Exception as e:
+        return f"Could not upload: {e}"
+    if r.status_code >= 300:
+        return f"Could not upload {key}: HTTP {r.status_code} {r.text[:160]}"
+
+    try:
+        _trigger_ingest()
+    except Exception:
+        pass
+    return f"Stored k3://{BUCKET}/{key} — K3 is processing + embedding it for semantic recall."
+
+
+def save_chat(messages: list[dict], title: str | None = None) -> str:
+    """Persist a conversation to memory so a future chat can recall it."""
+    lines = [
+        f"{m.get('role', '?')}: {m.get('content', '')}"
+        for m in (messages or [])
+        if m.get("content")
+    ]
+    if not lines:
+        return "Nothing to save — the conversation is empty."
+    stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+    return save_memory(title or f"Conversation {stamp}", "\n\n".join(lines), tags=["chat"])
+
+
 def search_memories(query: str, top_k: int = 5) -> str:
     try:
         ensure_ingest()

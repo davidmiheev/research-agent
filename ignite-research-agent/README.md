@@ -44,6 +44,15 @@ object to call a tool, so it works against any chat-completions gateway.
 | `search_memory` | **semantic vector search** over memories (`POST /:bucket/vector/search`) |
 | `list_memories` | list stored memory objects |
 | `search_arxiv` | find relevant arXiv papers |
+| `load_arxiv_paper` | download a paper's **PDF** and upload it to K3 — K3 extracts + embeds it, so the full text becomes searchable |
+| `save_chat` | persist the current conversation to memory so a future chat can recall it |
+
+### Conversation context
+The agent keeps the **full conversation per session** in process; the last
+`CONTEXT_WINDOW` (40) messages are fed to the model each turn for continuity, and
+the whole conversation is what `save_chat` (or `POST /chat/save`) persists. A
+loaded arXiv PDF is processed by K3's ingestion pipeline (extract → chunk →
+embed) — e.g. *Attention Is All You Need* lands as ~86 searchable chunks.
 
 ### Memory + vector search in K3
 A saved memory goes through K3's real ingestion chain, which the agent sets up
