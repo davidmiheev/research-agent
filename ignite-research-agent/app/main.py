@@ -12,6 +12,7 @@ from collections import defaultdict
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from . import agent, k3, llm
 
@@ -24,8 +25,11 @@ _SESSIONS: dict[str, list[dict]] = defaultdict(list)
 CONTEXT_WINDOW = 40
 
 
+# Async + trivial so it's answered directly on the event loop. The blocking
+# agent/K3 work below is offloaded to a threadpool, so the loop is never frozen
+# mid-conversation and the readiness/liveness probe always gets a fast reply.
 @app.get("/healthz")
-def healthz():
+async def healthz():
     return {"status": "ok"}
 
 
@@ -54,7 +58,8 @@ async def invoke(request: Request):
             {"error": "send {\"message\": \"...\"}", "model_configured": llm.is_configured()},
             status_code=400,
         )
-    return _chat(message, session_id)
+    # _chat does blocking HTTP (LLM + tools); run it off the event loop.
+    return await run_in_threadpool(_chat, message, session_id)
 
 
 @app.post("/memories/list")
@@ -65,7 +70,10 @@ def memories_list():
 @app.post("/memories/search")
 async def memories_search(request: Request):
     body = await request.json()
-    return {"results": k3.search_memories(body.get("query", ""), int(body.get("top_k", 5)))}
+    res = await run_in_threadpool(
+        k3.search_memories, body.get("query", ""), int(body.get("top_k", 5))
+    )
+    return {"results": res}
 
 
 @app.post("/chat/save")
@@ -73,7 +81,10 @@ async def chat_save(request: Request):
     """Persist a session's conversation to memory (used by the UI's save button)."""
     body = await request.json()
     session_id = (body or {}).get("session_id", "default")
-    return {"result": k3.save_chat(_SESSIONS.get(session_id, []), (body or {}).get("title"))}
+    res = await run_in_threadpool(
+        k3.save_chat, _SESSIONS.get(session_id, []), (body or {}).get("title")
+    )
+    return {"result": res}
 
 
 @app.get("/", response_class=HTMLResponse)
