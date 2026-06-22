@@ -183,7 +183,10 @@ def put_object(key: str, data: bytes, content_type: str = "application/octet-str
         _trigger_ingest()
     except Exception:
         pass
-    return f"Stored k3://{BUCKET}/{key} — K3 is processing + embedding it for semantic recall."
+    return (
+        f"Stored k3://{BUCKET}/{key} — K3 is indexing it now; it becomes searchable "
+        f"in ~30s (not yet), so don't search for its contents immediately."
+    )
 
 
 def save_chat(messages: list[dict], title: str | None = None) -> str:

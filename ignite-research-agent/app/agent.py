@@ -43,10 +43,13 @@ Rules:
 - Save a memory whenever the user shares a durable fact, preference, decision,
   or asks you to remember something. Keep the title short; put detail in content.
 - When the user asks what you know/remember, or asks a question earlier context
-  might answer, use search_memory first.
+  might answer, use search_memory first. Don't over-search: after one or two
+  searches, ANSWER from what you found (plus the conversation). Re-running
+  reworded queries on noisy results rarely helps and wastes the user's time.
 - Use search_arxiv to find papers. Use load_arxiv_paper when the user wants a
-  paper *ingested* into memory (e.g. "remember this paper", "load arxiv 2406.x");
-  it uploads the PDF and K3 extracts + embeds it so you can recall its details.
+  paper *ingested* into memory. NOTE: a freshly loaded paper is NOT searchable
+  for ~30s while K3 indexes it — do NOT immediately search for its contents;
+  answer from the abstract (search_arxiv) or tell the user it's being added.
 - Use save_chat when the user asks to save/remember this conversation.
 - After a tool returns, continue. When you are done, reply with a normal
   natural-language message (no JSON). Never wrap tool JSON in markdown fences.
@@ -113,15 +116,37 @@ def _extract_tool_call(text: str, tool_names) -> dict | None:
 def _looks_like_payload(text: str) -> bool:
     """True if the model's 'final' reply is actually a raw tool/search payload."""
     s = text.strip()
-    if not (s.startswith("{") and s.endswith("}")):
+    if not s.startswith("{"):
         return False
     try:
         obj = json.loads(s)
+        return isinstance(obj, dict) and any(
+            k in obj for k in ("tool", "args", "query", "top_k", "include_content")
+        )
     except Exception:
-        return False
-    return isinstance(obj, dict) and any(
-        k in obj for k in ("tool", "args", "query", "top_k", "include_content")
-    )
+        # Malformed JSON, but clearly a leaked tool/search payload blob.
+        return bool(re.match(r'\{\s*"(tool|query|args|top_k)"\s*:', s))
+
+
+def _final_synthesis(messages: list[dict]) -> str:
+    """Out of tool budget: ask for one final natural-language answer (no tools)."""
+    msgs = messages + [{
+        "role": "user",
+        "content": "Stop using tools now. Using everything above, answer my original "
+        "question in clear natural language (Markdown; math in $…$ / $$…$$). If the "
+        "information is incomplete, summarize what you found and what is still missing "
+        "— do NOT call any tool or output JSON.",
+    }]
+    try:
+        out = llm.chat(msgs).strip()
+    except Exception:
+        out = ""
+    if not out or _looks_like_payload(out):
+        return (
+            "I gathered several relevant excerpts but couldn't compose a clean answer "
+            "in time — try narrowing the question (e.g. a specific benchmark or table)."
+        )
+    return out
 
 
 def run_agent(
@@ -144,6 +169,8 @@ def run_agent(
     messages.append({"role": "user", "content": user_message})
 
     tools_used: list[dict] = []
+    searches = 0
+    nudged = False
 
     for _ in range(MAX_STEPS):
         try:
@@ -176,5 +203,18 @@ def run_agent(
             {"role": "user", "content": f"[tool:{call['tool']}] result:\n{result}"}
         )
 
-    summary = "; ".join(t["result"] for t in tools_used) or "I wasn't able to finish that."
-    return {"reply": summary, "tools_used": tools_used}
+        if call["tool"] == "search_memory":
+            searches += 1
+        if searches >= 3 and not nudged:
+            # Stop the search-loop the model can fall into on noisy results.
+            nudged = True
+            messages.append({
+                "role": "user",
+                "content": "You've searched several times. Do NOT search again — answer "
+                "my original question now in natural language from what you found "
+                "(Markdown; math in $…$ / $$…$$). If something isn't available yet, say so.",
+            })
+
+    # Tool budget exhausted — synthesise one natural-language answer instead of
+    # dumping raw tool output to the chat.
+    return {"reply": _final_synthesis(messages), "tools_used": tools_used}
