@@ -62,6 +62,30 @@ def get_by_id(arxiv_id: str) -> dict | None:
     return papers[0] if papers else None
 
 
+def _base_id(x: str) -> str:
+    return re.sub(r"v\d+$", "", x or "")
+
+
+def titles_for(ids: list[str]) -> dict[str, str]:
+    """Batch-fetch titles for many arXiv ids in a single id_list request.
+    Returns {requested_id: title}, matching version-agnostically."""
+    ids = [i for i in ids if i]
+    if not ids:
+        return {}
+    try:
+        r = httpx.get(
+            f"{API}?id_list={urllib.parse.quote(','.join(ids))}&max_results={len(ids)}",
+            timeout=30,
+            follow_redirects=True,
+        )
+        r.raise_for_status()
+        entries = _parse_entries(r.text)
+    except Exception:
+        return {}
+    by_base = {_base_id(e["id"]): e["title"] for e in entries if e.get("id") and e.get("title")}
+    return {rid: by_base[_base_id(rid)] for rid in ids if _base_id(rid) in by_base}
+
+
 def search_text(query: str, max_results: int = 5) -> str:
     """Human-readable rendering for the agent loop."""
     try:

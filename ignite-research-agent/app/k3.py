@@ -224,20 +224,24 @@ def paper_loaded(arxiv_id: str) -> bool:
     return arxiv_id in _get_index()
 
 
-def record_paper(arxiv_id: str, title: str, url: str = "") -> None:
+def _put_index(idx: dict) -> None:
     try:
         ensure_bucket()
-        idx = _get_index()
-        idx[arxiv_id] = {
-            "title": title,
-            "url": url,
-            "loaded_at": time.strftime("%Y-%m-%d", time.gmtime()),
-        }
         with httpx.Client(base_url=BASE, timeout=15) as c:
             c.put(f"/{BUCKET}/{INDEX_KEY}", headers=_headers("application/json"),
                   content=json.dumps(idx).encode())
     except Exception:
         pass  # the index is a convenience; never fail an upload over it
+
+
+def record_paper(arxiv_id: str, title: str, url: str = "") -> None:
+    idx = _get_index()
+    idx[arxiv_id] = {
+        "title": title,
+        "url": url,
+        "loaded_at": time.strftime("%Y-%m-%d", time.gmtime()),
+    }
+    _put_index(idx)
 
 
 def list_papers() -> str:
@@ -260,6 +264,19 @@ def list_papers() -> str:
     all_ids = sorted(set(ids) | set(idx.keys()))
     if not all_ids:
         return "No arXiv papers have been loaded into memory yet."
+
+    # Fill in any titles we don't know yet (one batched arXiv call) and remember
+    # them, so papers loaded before the index get titles too.
+    missing = [a for a in all_ids if not (isinstance(idx.get(a), dict) and idx[a].get("title"))]
+    if missing:
+        from . import arxiv  # lazy import to avoid a cycle
+
+        fetched = arxiv.titles_for(missing)
+        if fetched:
+            for a, t in fetched.items():
+                idx[a] = {**(idx.get(a) if isinstance(idx.get(a), dict) else {}), "title": t}
+            _put_index(idx)
+
     lines = []
     for aid in all_ids:
         meta = idx.get(aid)
