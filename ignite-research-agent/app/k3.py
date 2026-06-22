@@ -21,6 +21,7 @@ instead of waiting for the source's periodic sync.
 from __future__ import annotations
 
 import concurrent.futures as cf
+import json
 import os
 import re
 import time
@@ -187,6 +188,84 @@ def put_object(key: str, data: bytes, content_type: str = "application/octet-str
         f"Stored k3://{BUCKET}/{key} — K3 is indexing it now; it becomes searchable "
         f"in ~30s (not yet), so don't search for its contents immediately."
     )
+
+
+# ── Loaded-paper index ────────────────────────────────────────────────────────
+# A small catalog object so the agent remembers which arXiv papers it has already
+# uploaded (and doesn't re-download/re-embed them).
+INDEX_KEY = os.getenv("K3_PAPERS_INDEX", "papers-index.json")
+
+
+def _get_index() -> dict:
+    try:
+        with httpx.Client(base_url=BASE, timeout=15) as c:
+            r = c.get(f"/{BUCKET}/{INDEX_KEY}", headers=_headers(content_type=""))
+        if r.status_code == 200:
+            data = r.json()
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def paper_loaded(arxiv_id: str) -> bool:
+    # Authoritative check: does the PDF object exist? (Covers papers uploaded
+    # before the index existed.) Fall back to the index if the HEAD fails.
+    key = f"arxiv-{arxiv_id.replace('/', '-')}.pdf"
+    try:
+        with httpx.Client(base_url=BASE, timeout=15) as c:
+            r = c.head(f"/{BUCKET}/{key}", headers=_headers(content_type=""))
+        if r.status_code == 200:
+            return True
+        if r.status_code == 404:
+            return False
+    except Exception:
+        pass
+    return arxiv_id in _get_index()
+
+
+def record_paper(arxiv_id: str, title: str, url: str = "") -> None:
+    try:
+        ensure_bucket()
+        idx = _get_index()
+        idx[arxiv_id] = {
+            "title": title,
+            "url": url,
+            "loaded_at": time.strftime("%Y-%m-%d", time.gmtime()),
+        }
+        with httpx.Client(base_url=BASE, timeout=15) as c:
+            c.put(f"/{BUCKET}/{INDEX_KEY}", headers=_headers("application/json"),
+                  content=json.dumps(idx).encode())
+    except Exception:
+        pass  # the index is a convenience; never fail an upload over it
+
+
+def list_papers() -> str:
+    # Authoritative list = the uploaded PDF objects; titles come from the index.
+    idx = _get_index()
+    ids: list[str] = []
+    try:
+        with httpx.Client(base_url=BASE, timeout=15) as c:
+            r = c.get(f"/{BUCKET}?list-type=2&prefix=arxiv-", headers=_headers(content_type=""))
+        if r.status_code == 200:
+            root = ET.fromstring(r.text)
+            ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+            for k in root.findall(".//s3:Contents/s3:Key", ns):
+                m = re.match(r"arxiv-(.+)\.pdf$", k.text or "")
+                if m:
+                    ids.append(m.group(1))
+    except Exception:
+        ids = list(idx.keys())
+
+    all_ids = sorted(set(ids) | set(idx.keys()))
+    if not all_ids:
+        return "No arXiv papers have been loaded into memory yet."
+    lines = []
+    for aid in all_ids:
+        meta = idx.get(aid)
+        title = meta.get("title", "") if isinstance(meta, dict) else ""
+        lines.append(f"- arXiv:{aid}" + (f" — {title}" if title else ""))
+    return "Papers currently in memory:\n" + "\n".join(lines)
 
 
 def save_chat(messages: list[dict], title: str | None = None) -> str:

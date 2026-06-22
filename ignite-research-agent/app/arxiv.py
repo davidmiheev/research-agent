@@ -108,6 +108,11 @@ def load_to_memory(id_or_query: str) -> str:
     except Exception as e:
         return f"arXiv lookup failed: {e}"
 
+    title = paper.get("title") or arxiv_id
+    # Already loaded? Don't re-download/re-embed.
+    if k3.paper_loaded(arxiv_id):
+        return f"arXiv:{arxiv_id} '{title}' is already in your memory — no need to re-upload."
+
     try:
         r = httpx.get(f"https://arxiv.org/pdf/{arxiv_id}", timeout=120, follow_redirects=True)
         r.raise_for_status()
@@ -116,6 +121,6 @@ def load_to_memory(id_or_query: str) -> str:
         return f"Found arXiv:{arxiv_id} but could not download its PDF: {e}"
 
     key = f"arxiv-{arxiv_id.replace('/', '-')}.pdf"
-    title = paper.get("title") or arxiv_id
     status = k3.put_object(key, pdf, "application/pdf")
+    k3.record_paper(arxiv_id, title, paper.get("url") or f"https://arxiv.org/abs/{arxiv_id}")
     return f"Uploaded arXiv:{arxiv_id} '{title}' ({len(pdf)} bytes) to memory. {status}"

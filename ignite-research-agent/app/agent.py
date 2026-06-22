@@ -9,7 +9,8 @@ Tools:
   - search_memory(query)                -> semantic vector search over memories
   - list_memories()                     -> list stored memory objects
   - search_arxiv(query, max_results?)   -> find relevant arXiv papers
-  - load_arxiv_paper(id|query)          -> upload a paper's PDF to memory (K3 processes it)
+  - load_arxiv_paper(id|query)          -> upload a paper's PDF to memory (idempotent)
+  - list_papers()                       -> list arXiv papers already loaded into memory
   - save_chat(title?)                   -> persist this conversation to memory
 """
 
@@ -37,6 +38,7 @@ own, and nothing else:
   {"tool": "list_memories", "args": {}}
   {"tool": "search_arxiv", "args": {"query": "...", "max_results": 5}}
   {"tool": "load_arxiv_paper", "args": {"query": "..."}}      // or {"id": "2406.12345"}
+  {"tool": "list_papers", "args": {}}
   {"tool": "save_chat", "args": {"title": "..."}}             // title optional
 
 Rules:
@@ -50,6 +52,10 @@ Rules:
   paper *ingested* into memory. NOTE: a freshly loaded paper is NOT searchable
   for ~30s while K3 indexes it — do NOT immediately search for its contents;
   answer from the abstract (search_arxiv) or tell the user it's being added.
+- You remember which papers you've loaded: use list_papers to see them, and
+  prefer it before loading (load_arxiv_paper is idempotent and won't duplicate,
+  but checking avoids needless work). If asked "which papers do you have",
+  use list_papers.
 - Use save_chat when the user asks to save/remember this conversation.
 - After a tool returns, continue. When you are done, reply with a normal
   natural-language message (no JSON). Never wrap tool JSON in markdown fences.
@@ -77,6 +83,7 @@ def _build_tools(conversation: list[dict]):
         "load_arxiv_paper": lambda a: arxiv.load_to_memory(
             a.get("id") or a.get("arxiv_id") or a.get("query", "")
         ),
+        "list_papers": lambda a: k3.list_papers(),
         "save_chat": lambda a: k3.save_chat(conversation, a.get("title")),
     }
 
